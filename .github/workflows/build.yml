@@ -1,0 +1,99 @@
+name: Build upstream app
+
+on:
+  schedule:
+    - cron: "42 6 * * *"
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Set to 'yes' to also build older snapshots from the upstream history (thinned to a spread)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency: build
+
+env:
+  APP: photo-studio
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the snapshots to build
+        run: |
+          # A snapshot is the last upstream commit that touched this app, named <date>-<short hash>.
+          q="repos/HeyPuter/everything/commits?path=src/$APP"
+          if [ -n "${{ inputs.backfill }}" ]; then
+            gh api --paginate "$q&per_page=100" --jq '.[] | {tagName: ((.commit.committer.date[0:10] | gsub("-";".")) + "-" + .sha[0:7]), publishedAt: .commit.committer.date}' | jq -s . > commits.json
+            # Thin to a spread of at most 15, never all of them.
+            BUDGET=15 python3 scripts/pick.py < commits.json > todo.txt
+          else
+            gh api "$q&per_page=1" --jq '.[0] | (.commit.committer.date[0:10] | gsub("-";".")) + "-" + .sha[0:7]' > todo.txt
+          fi
+          rm -f commits.json
+          grep -v '^$' todo.txt | while read -r ver; do [ -d "v$ver" ] || echo "$ver"; done > todo.new
+          mv todo.new todo.txt
+          cat todo.txt
+          if [ -s todo.txt ]; then echo "NEED=true" >> "$GITHUB_ENV"; fi
+
+      - uses: actions/setup-node@v4
+        if: env.NEED == 'true'
+        with:
+          node-version: 22
+
+      - name: Build each snapshot
+        if: env.NEED == 'true'
+        run: |
+          git clone --quiet --filter=blob:none https://github.com/HeyPuter/everything.git up
+          while read -r ver; do
+            sha="${ver##*-}"
+            echo "::group::Build $ver"
+            git -C up clean -fdxq
+            git -C up checkout --quiet --force "$sha" || { echo "::warning::could not check out $sha"; echo "::endgroup::"; continue; }
+            if [ ! -d "up/src/$APP" ]; then echo "::warning::$ver has no src/$APP"; echo "::endgroup::"; continue; fi
+            if (cd "up/src/$APP" && npm ci && npm run build -- --base=./) && [ -f "up/src/$APP/dist/index.html" ]; then
+              mkdir "v$ver"
+              cp -a "up/src/$APP/dist/." "v$ver/"
+              cp up/LICENSE "v$ver/LICENSE" 2>/dev/null || true
+              printf 'Built from HeyPuter/everything at commit %s (src/%s).\nhttps://github.com/HeyPuter/everything/tree/%s/src/%s\n' "$sha" "$APP" "$sha" "$APP" > "v$ver/SOURCE.txt"
+            else
+              echo "::warning::build failed for $ver"
+            fi
+            echo "::endgroup::"
+          done < todo.txt
+          rm -rf up
+
+      - name: Update latest and versions.json
+        run: |
+          versions=$(find . -maxdepth 1 -type d -name 'v[0-9]*' -printf '%f\n' | sed 's/^v//' | sort -rV)
+          [ -n "$versions" ] || { echo "No versions built"; exit 0; }
+          latest=$(echo "$versions" | head -n1)
+          mkdir -p latest
+          printf '<!doctype html><meta charset="utf-8"><title>%s</title><meta http-equiv="refresh" content="0; url=../v%s/"><link rel="canonical" href="../v%s/"><a href="../v%s/">Open %s</a>\n' "$APP" "$latest" "$latest" "$latest" "$APP" > latest/index.html
+          echo "$versions" | jq -R . | jq -s --arg latest "$latest" '{latest: $latest, versions: .}' > versions.json
+          cat versions.json
+
+      - name: Keep the site under its size cap
+        run: bash scripts/prune.sh
+
+      - name: Commit and request a Pages build
+        run: |
+          rm -f todo.txt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing new"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add snapshots"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds"
