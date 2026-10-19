@@ -71,6 +71,9 @@ jobs:
           done < todo.txt
           rm -rf up
 
+      - name: Record versions that could not be hosted
+        run: bash scripts/skip.sh sync todo.txt
+
       - name: Update latest and versions.json
         run: |
           versions=$(find . -maxdepth 1 -type d -name 'v[0-9]*' -printf '%f\n' | sed 's/^v//' | sort -rV)
