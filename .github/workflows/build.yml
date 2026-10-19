@@ -35,6 +35,8 @@ jobs:
             gh api --paginate "$q&per_page=100" --jq '.[] | {tagName: ((.commit.committer.date[0:10] | gsub("-";".")) + "-" + .sha[0:7]), publishedAt: .commit.committer.date}' | jq -s . > commits.json
             # Thin to a spread of at most 15, never all of them.
             BUDGET=15 python3 scripts/pick.py < commits.json > todo.txt
+            # Snapshots the thinning left out are recorded, so the full history is accounted for.
+            jq -r '.[].tagName' commits.json | grep -vxFf todo.txt | while read -r v; do [ -d "v$v" ] || bash scripts/skip.sh add "$v" "Left out to keep a spread of at most 15 snapshots."; done || true
           else
             gh api "$q&per_page=1" --jq '.[0] | (.commit.committer.date[0:10] | gsub("-";".")) + "-" + .sha[0:7]' > todo.txt
           fi
