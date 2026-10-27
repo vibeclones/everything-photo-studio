@@ -1,0 +1,2 @@
+Built from HeyPuter/everything at commit e01e590 (src/photo-studio).
+https://github.com/HeyPuter/everything/tree/e01e590/src/photo-studio
