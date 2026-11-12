@@ -1,0 +1,1 @@
+import{br as c}from"./index-DQgvuSro.js";const o=5e3;async function i(t){const r=c.create(document.createElement("canvas"),t);let n=0;const a=await Promise.race([r,new Promise(e=>n=window.setTimeout(e,o))]).finally(()=>clearTimeout(n));return a||(r.then(e=>e.dispose(),()=>{}),c.create(document.createElement("canvas"),t,"webgl2"))}export{i as c};
